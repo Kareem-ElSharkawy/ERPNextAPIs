@@ -1,713 +1,606 @@
-# ERPNext API Requests Extracted
+# دليل مالي مبسط لتكامل النظام مع ERPNext
 
-> Source file: `Pasted text(197).txt`  
-> Integration: ERPNext / Frappe REST API  
-> Base URL placeholder: `{{base_url}}`  
-> Example: `https://erp.example.com`
+> **الغرض من الملف:**  
+> شرح ما الذي يتم إرساله من النظام إلى ERPNext بلغة محاسبية بسيطة، بحيث يقدر المحاسب المالي يراجع الدورة المالية بدون الدخول في تفاصيل برمجية مثل cURL أو JSON أو API.
 
 ---
 
-## 1. Authentication
+## 1) الصورة العامة للتكامل
 
-### 1.1 Password Login
+التكامل الحالي يربط النظام الداخلي بـ ERPNext في العمليات المالية التالية:
 
-Used when config has `erp_username` + `erp_password`.
-
-```http
-POST {{base_url}}/api/method/login
-Content-Type: application/json
-Accept: application/json
-```
-
-**Body**
-
-```json
-{
-  "usr": "{{erp_username}}",
-  "pwd": "{{erp_password}}"
-}
-```
-
-**cURL**
-
-```bash
-curl -X POST "{{base_url}}/api/method/login" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -c cookies.txt \
-  -b cookies.txt \
-  --data '{
-    "usr": "{{erp_username}}",
-    "pwd": "{{erp_password}}"
-  }'
-```
+| رقم | العملية في النظام | المستند الذي يتم إنشاؤه في ERPNext | المعنى المالي |
+|---:|---|---|---|
+| 1 | مزامنة عميل | Customer | فتح / ربط حساب عميل في ERPNext |
+| 2 | إرسال فاتورة | Sales Invoice | إثبات مديونية على العميل مقابل خدمة / إيجار / عمولة |
+| 3 | إرسال تحصيل | Payment Entry | إثبات قبض مبلغ من العميل وربطه بالفاتورة إن وجدت |
+| 4 | إرسال قيد مصروف عام | Journal Entry | ترحيل قيد محاسبي موجود في النظام إلى ERPNext |
+| 5 | إرسال مصروف عقاري | Journal Entry | إثبات مصروف على عقار أو وحدة مقابل خزينة / بنك |
+| 6 | إلغاء فاتورة | Cancel Sales Invoice | إلغاء فاتورة سبق إرسالها إلى ERPNext |
 
 ---
 
-### 1.2 Token Authentication Header
+## 2) قاعدة مهمة للمحاسب
 
-Used when config has `erp_api_key` + `erp_api_secret`.
+المحاسب لا يحتاج يراجع الـ API نفسه. المطلوب منه يراجع 4 حاجات:
 
-```http
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-Accept: application/json
-```
+1. **هل المستند صحيح داخل النظام؟**  
+   العميل، التاريخ، القيمة، الضريبة، الوصف، والخزينة / الحساب.
 
----
+2. **هل الحسابات المحاسبية مظبوطة؟**  
+   حساب الإيراد، حساب الضريبة، حساب البنك / الخزينة، حساب المصروف.
 
-## 2. Test Connection
+3. **هل المستند اتبعت مرة واحدة فقط؟**  
+   وجود رقم ERPNext يعني أن المستند اتربط بالفعل ولا يجب تكراره.
 
-### Get Logged User
-
-```http
-GET {{base_url}}/api/method/frappe.auth.get_logged_user
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**cURL**
-
-```bash
-curl -X GET "{{base_url}}/api/method/frappe.auth.get_logged_user" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}"
-```
+4. **لو حصل خطأ، نراجعه من سجل التكامل**  
+   جدول `erp_integ_log` يحتفظ بنوع العملية، حالتها، كود الاستجابة، رسالة الخطأ، والبيانات المرسلة.
 
 ---
 
-## 3. Customer Requests
+## 3) تجهيزات مطلوبة قبل التشغيل
 
-### 3.1 Get Customer By ERP ID / Name
+قبل تشغيل الربط مع ERPNext لازم يتم التأكد من البيانات التالية:
 
-```http
-GET {{base_url}}/api/resource/Customer/{{customer_name}}
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**cURL**
-
-```bash
-curl -X GET "{{base_url}}/api/resource/Customer/{{customer_name}}" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}"
-```
+| البند | المطلوب من المحاسب / الإدارة المالية | أين يظهر في النظام |
+|---|---|---|
+| اسم الشركة في ERPNext | نفس اسم الشركة الموجود في ERPNext بالضبط | إعدادات التكامل |
+| رابط ERPNext | رابط النظام الخارجي | `erp_integrations.erp_api_url` |
+| بيانات الدخول / API | مفتاح API أو اسم مستخدم وكلمة مرور | `erp_integrations` |
+| حساب الإيراد الافتراضي | الحساب الذي ستقفل عليه بنود الفواتير | إعدادات التكامل |
+| مركز التكلفة الافتراضي | مركز التكلفة المستخدم في الفواتير / القيود | إعدادات التكامل |
+| قالب الضريبة | Sales Taxes and Charges Template داخل ERPNext | إعدادات التكامل |
+| حساب البنك / الخزينة للتحصيل | الحساب الذي يدخل عليه القبض | `incoming_payment_account` أو `acc_treasury.acc_code` |
+| حسابات المصروفات | كود الحساب الذي يتم تحميل المصروف عليه | `plt_exp.post_acc_code` |
+| حساب ضريبة المدخلات | يستخدم عند وجود ضريبة على المصروف | `plt_exp.post_tax_code` |
+| حسابات الخزائن | كل خزينة / بنك لازم يكون له كود حساب | `acc_treasury.acc_code` |
 
 ---
 
-### 3.2 Search Customer By VAT / Tax ID
+# 4) شرح العمليات المالية
 
-```http
-GET {{base_url}}/api/resource/Customer?filters={{filters}}&fields={{fields}}&limit_page_length=1
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
+---
 
-**Query Example**
+## 4.1 مزامنة العميل مع ERPNext
+
+### معناها للمحاسب
+النظام يتأكد أن العميل موجود في ERPNext.  
+لو موجود بالفعل يتم ربطه.  
+لو غير موجود يتم إنشاء عميل جديد.
+
+### مصدر البيانات في النظام
+جدول العملاء: `res_client`
+
+### أهم البيانات المستخدمة
+
+| البيان | الحقل في النظام | الحقل المقابل في ERPNext |
+|---|---|---|
+| اسم العميل | `entity_name` / `entity_name_en` | Customer Name |
+| الرقم الضريبي | `vat_number` | Tax ID |
+| رقم الجوال | `contact_mobile` | Mobile No |
+| البريد الإلكتروني | `contact_email` | Email ID |
+| العنوان | `client_address` | Address / Customer Details |
+| رقم الربط مع ERPNext | `erp_id` | Customer ID / Name |
+
+### ماذا يحدث؟
+- إذا كان للعميل `erp_id` موجود، النظام يتحقق أنه موجود في ERPNext.
+- إذا لم يكن موجودًا، يبحث النظام بالرقم الضريبي `vat_number`.
+- إذا لم يجد العميل، ينشئ Customer جديد.
+- بعد النجاح يتم حفظ رقم العميل من ERPNext في `res_client.erp_id`.
+
+### مراجعة المحاسب
+قبل إرسال الفواتير، يجب التأكد من:
+- اسم العميل صحيح.
+- الرقم الضريبي صحيح.
+- رقم الجوال والبريد إن وجدا صحيحين.
+- لا يوجد تكرار لنفس العميل بنفس الرقم الضريبي.
+
+---
+
+## 4.2 إرسال فاتورة إلى ERPNext
+
+### معناها للمحاسب
+يتم إنشاء **Sales Invoice** في ERPNext بناءً على فاتورة موجودة في النظام.
+
+### مصدر البيانات في النظام
+- رأس الفاتورة: `plt_einv`
+- بنود الفاتورة: `plt_einv_line`
+
+### المستند الناتج في ERPNext
+`Sales Invoice`
+
+### الأثر المحاسبي المتوقع
+الأثر النهائي يعتمد على إعدادات ERPNext، لكن غالبًا يكون:
+
+| الطرف | الحساب |
+|---|---|
+| مدين | حساب العميل / الذمم المدينة |
+| دائن | حساب الإيراد |
+| دائن | ضريبة المخرجات، لو الفاتورة عليها ضريبة |
+
+### أهم بيانات الفاتورة
+
+| البيان | الحقل في النظام | يذهب إلى ERPNext |
+|---|---|---|
+| رقم الفاتورة | `einv_number` | Title / Reference |
+| العميل | `customer_id` | Customer |
+| تاريخ الفاتورة | `einv_date` | Posting Date |
+| تاريخ الاستحقاق | `dt_due` | Due Date |
+| العملة | `currency_code` أو SAR افتراضيًا | Currency |
+| الوصف | `desc_ar` / `desc_en` | Description |
+| قيمة قبل الضريبة | `amt_untax` | Item Rate / Net Amount |
+| الضريبة | `amt_tax` | Tax |
+| الإجمالي | `amt_tot` | Grand Total |
+| حالة الربط | `erp_id` | ERPNext Invoice Name |
+
+### بنود الفاتورة
+كل بند من `plt_einv_line` يتحول إلى Item line في ERPNext.
+
+| البيان | الحقل |
+|---|---|
+| وصف البند | `desc_ar` / `srv_ar` / `desc_en` |
+| الكمية | `qty` |
+| السعر / القيمة | `amt_st` أو `amt_untax` |
+| الضريبة | `amt_tax` |
+| الإجمالي | `amt_tot` |
+
+### ملاحظات مهمة
+- لو الفاتورة لها `erp_id` بالفعل، لا يتم إرسالها مرة أخرى.
+- لو الفاتورة بدون عميل، لا يتم إرسالها.
+- قبل إرسال الفاتورة، النظام يتأكد أن العميل موجود في ERPNext.
+- لو البند غير موجود كـ Item في ERPNext، النظام يحاول إنشاء Item من نوع Service.
+- لو الفاتورة Credit Note، يتم إرسالها كفاتورة مرتجعة `is_return=1` ببنود سالبة.
+
+### مراجعة المحاسب
+قبل الإرسال:
+- العميل موجود وصحيح.
+- التاريخ صحيح.
+- إجمالي الفاتورة = الصافي + الضريبة.
+- حساب الإيراد الافتراضي محدد.
+- قالب الضريبة صحيح.
+- الفاتورة لم ترسل قبل ذلك.
+
+---
+
+## 4.3 إرسال تحصيل / قبض إلى ERPNext
+
+### معناها للمحاسب
+يتم إنشاء **Payment Entry** في ERPNext لإثبات مبلغ تم تحصيله من العميل.
+
+### مصدر البيانات في النظام
+- رأس التحصيل: `plt_pay`
+- بنود التحصيل: `plt_pay_line`
+
+### المستند الناتج في ERPNext
+`Payment Entry`
+
+### الأثر المحاسبي المتوقع
+
+| الطرف | الحساب |
+|---|---|
+| مدين | البنك / الخزينة |
+| دائن | حساب العميل / الذمم المدينة |
+
+### أهم بيانات التحصيل
+
+| البيان | الحقل في النظام | يذهب إلى ERPNext |
+|---|---|---|
+| رقم التحصيل | `payment_id` / `payment_track` | Reference |
+| العميل | `atr_id` | Party = Customer |
+| تاريخ الدفع | `payment_date` | Posting Date |
+| مبلغ الدفع | مجموع `plt_pay_line.amt_tot` | Paid Amount |
+| العملة | `currency_code` أو SAR | Currency |
+| الخزينة / البنك | `treasury_id` | Paid To |
+| طريقة الدفع | `pay_method` | ملاحظة / مرجع داخلي |
+| رقم العملية البنكية | `transid` | Reference No |
+
+### ربط التحصيل بالفاتورة
+لو كان بند التحصيل مرتبطًا بـ `tmt_id` وتم العثور على فاتورة ERPNext مرتبطة به، يتم ربط التحصيل بالفاتورة داخل ERPNext عن طريق:
+- Reference Type = Sales Invoice
+- Reference Name = رقم فاتورة ERPNext
+- Allocated Amount = قيمة التحصيل
+
+### مراجعة المحاسب
+قبل الإرسال:
+- التحصيل له بنود.
+- العميل محدد.
+- المبلغ أكبر من صفر.
+- الخزينة أو البنك مربوط بكود حساب.
+- لو التحصيل يخص فاتورة، الفاتورة تكون مرسلة إلى ERPNext أولًا.
+- رقم العملية البنكية `transid` موجود إن كان التحصيل بنكيًا.
+
+---
+
+## 4.4 إرسال قيد مصروف عام
+
+### معناها للمحاسب
+النظام يأخذ قيد محاسبي موجود عنده ويرسله كما هو إلى ERPNext كـ **Journal Entry**.
+
+### مصدر البيانات في النظام
+- الحركة: `acc_trx`
+- اليومية: `acc_journal`
+- القيود / أطراف القيد: `acc_entry`
+
+### المستند الناتج في ERPNext
+`Journal Entry`
+
+### طريقة الترحيل
+كل سطر في `acc_entry` يتحول إلى سطر في Journal Entry داخل ERPNext.
+
+| البيان | الحقل في النظام | يذهب إلى ERPNext |
+|---|---|---|
+| الحساب | `acc_code` | Account |
+| مدين | `amt_in` | Debit |
+| دائن | `amt_out` | Credit |
+| مركز تكلفة | `cost_center` | Cost Center |
+| الوصف | `entry_desc` / `trx_desc` | User Remark |
+
+### شرط مهم جدًا
+لا يتم إرسال القيد إذا لم يكن متوازنًا.
+
+يعني:
+`إجمالي المدين = إجمالي الدائن`
+
+والنظام يسمح بفارق بسيط جدًا فقط حتى 0.02.
+
+### مراجعة المحاسب
+قبل الإرسال:
+- كل سطر له حساب صحيح.
+- مجموع المدين يساوي مجموع الدائن.
+- الوصف واضح.
+- التاريخ صحيح.
+- لا توجد حسابات ناقصة.
+
+---
+
+## 4.5 إرسال مصروف عقاري
+
+### معناها للمحاسب
+إثبات مصروف خاص بعقار / وحدة، مثل صيانة أو خدمة أو مصروف تشغيلي، وإرساله إلى ERPNext كقيد يومية.
+
+### مصدر البيانات في النظام
+- رأس المصروف: `plt_exp`
+- تفاصيل المصروف إن وجدت: `plt_exp_line`
+
+### المستند الناتج في ERPNext
+`Journal Entry`
+
+### الأثر المحاسبي المتوقع
+
+لو المصروف عليه ضريبة:
+
+| الطرف | الحساب |
+|---|---|
+| مدين | حساب المصروف |
+| مدين | حساب ضريبة المدخلات |
+| دائن | حساب الخزينة / البنك |
+
+لو المصروف بدون ضريبة:
+
+| الطرف | الحساب |
+|---|---|
+| مدين | حساب المصروف بإجمالي المبلغ |
+| دائن | حساب الخزينة / البنك |
+
+### أهم بيانات المصروف
+
+| البيان | الحقل في النظام |
+|---|---|
+| رقم المصروف | `exp_id` / `exp_code` |
+| تاريخ المصروف | `dt_due` أو تاريخ الإنشاء / التحديث |
+| حساب المصروف | `post_acc_code` |
+| حساب الضريبة | `post_tax_code` |
+| الخزينة / البنك | `treasury_id` |
+| الوصف | `tmt_desc` / `tmt_ar` |
+| قيمة قبل الضريبة | `amt_st` |
+| الضريبة | `amt_tax` |
+| الإجمالي | `amt_tot` |
+| حالة الترحيل | `posted` |
+| حالة الاعتماد | `acl_status_code` |
+
+### شروط الإرسال
+لا يرسل المصروف العقاري إلا إذا:
+- `posted = 1`
+- `acl_status_code = 43940`
+- حساب المصروف موجود.
+- الخزينة موجودة ومربوطة بكود حساب.
+- المبلغ أكبر من صفر.
+- لم يتم إرساله قبل ذلك بنجاح.
+
+### مراجعة المحاسب
+قبل الإرسال:
+- حساب المصروف صحيح.
+- حساب الضريبة صحيح إذا كان هناك ضريبة.
+- الخزينة / البنك صحيح.
+- المبلغ الإجمالي = المبلغ قبل الضريبة + الضريبة.
+- المصروف معتمد ومرحل داخل النظام.
+
+---
+
+## 4.6 إلغاء فاتورة في ERPNext
+
+### معناها للمحاسب
+إذا كانت الفاتورة مرسلة إلى ERPNext، يمكن إرسال طلب إلغاء لها.
+
+### مصدر البيانات في النظام
+`plt_einv`
+
+### الشرط الأساسي
+الفاتورة لازم يكون لها رقم ERPNext محفوظ في `erp_id`.
+
+### ماذا يحدث؟
+يتم إرسال طلب Cancel إلى ERPNext على مستند `Sales Invoice`.
+
+### مراجعة المحاسب
+قبل الإلغاء:
+- التأكد من رقم الفاتورة.
+- التأكد أن الإلغاء مطلوب فعلاً.
+- التأكد من أثر الإلغاء على التحصيلات المرتبطة، إن وجدت.
+
+---
+
+# 5) خريطة الجداول المالية المهمة
+
+## جدول العملاء `res_client`
+
+| الحقل | معناه للمحاسب |
+|---|---|
+| `client_id` | رقم العميل الداخلي |
+| `entity_name` | اسم العميل |
+| `vat_number` | الرقم الضريبي |
+| `contact_mobile` | رقم الجوال |
+| `contact_email` | البريد |
+| `client_address` | العنوان |
+| `client_acc_code` | كود حساب العميل داخليًا |
+| `erp_id` | رقم الربط مع ERPNext |
+
+---
+
+## جدول الفواتير `plt_einv`
+
+| الحقل | معناه للمحاسب |
+|---|---|
+| `einv_id` | رقم الفاتورة الداخلي |
+| `einv_number` | رقم الفاتورة |
+| `customer_id` | العميل |
+| `einv_date` | تاريخ الفاتورة |
+| `dt_due` | تاريخ الاستحقاق |
+| `amt_untax` | صافي قبل الضريبة |
+| `amt_tax` | قيمة الضريبة |
+| `amt_tot` | إجمالي الفاتورة |
+| `amt_collect` | المحصل من الفاتورة |
+| `acl_status_code` | حالة الفاتورة |
+| `erp_id` | رقم الفاتورة داخل ERPNext، لو موجود |
+
+---
+
+## جدول بنود الفواتير `plt_einv_line`
+
+| الحقل | معناه للمحاسب |
+|---|---|
+| `einv_line_id` | رقم بند الفاتورة |
+| `einv_id` | الفاتورة التابعة لها |
+| `srv_ar` | الخدمة |
+| `desc_ar` | وصف البند |
+| `qty` | الكمية |
+| `amt_untax` | صافي البند |
+| `amt_tax` | ضريبة البند |
+| `amt_tot` | إجمالي البند |
+| `tmt_id` | ربط البند بالاستحقاق / العقد |
+
+---
+
+## جدول التحصيلات `plt_pay`
+
+| الحقل | معناه للمحاسب |
+|---|---|
+| `payment_id` | رقم التحصيل الداخلي |
+| `payment_track` | رقم تتبع التحصيل |
+| `atr_id` | العميل |
+| `payment_date` | تاريخ التحصيل |
+| `payment_amt` | قيمة التحصيل |
+| `currency_code` | العملة |
+| `treasury_id` | الخزينة / البنك |
+| `pay_method` | طريقة الدفع |
+| `transid` | رقم العملية أو المرجع البنكي |
+| `pay_posted` | هل التحصيل مرحل داخليًا |
+| `acl_status_code` | حالة التحصيل |
+
+---
+
+## جدول بنود التحصيل `plt_pay_line`
+
+| الحقل | معناه للمحاسب |
+|---|---|
+| `line_id` | رقم البند |
+| `payment_id` | التحصيل التابع له |
+| `tmt_id` | الاستحقاق / العقد |
+| `tmt_desc` | وصف البند |
+| `amt_st` | قيمة قبل الضريبة |
+| `amt_tax` | الضريبة |
+| `amt_tot` | الإجمالي |
+| `amt_payable` | المستحق |
+| `amt_balance` | المتبقي |
+| `posted` | حالة الترحيل |
+| `set_entry_type` | نوع التسوية / الحركة |
+
+---
+
+## جدول المصروفات العقارية `plt_exp`
+
+| الحقل | معناه للمحاسب |
+|---|---|
+| `exp_id` | رقم المصروف |
+| `exp_code` | كود المصروف |
+| `treasury_id` | الخزينة / البنك |
+| `post_acc_code` | حساب المصروف |
+| `post_tax_code` | حساب الضريبة |
+| `tmt_desc` | الوصف |
+| `amt_st` | مبلغ قبل الضريبة |
+| `amt_tax` | الضريبة |
+| `amt_tot` | الإجمالي |
+| `posted` | هل المصروف مرحل |
+| `acl_status_code` | حالة الاعتماد |
+
+---
+
+## جدول الخزائن والبنوك `acc_treasury`
+
+| الحقل | معناه للمحاسب |
+|---|---|
+| `treasury_id` | رقم الخزينة / البنك |
+| `treasury_title` | اسم الخزينة / البنك |
+| `pay_method` | نوع الدفع: كاش / تحويل / عهدة |
+| `acc_code` | كود الحساب المرتبط بالخزينة |
+| `treasury_balance` | رصيد الخزينة داخل النظام |
+
+---
+
+## جدول الحسابات `acc_account`
+
+| الحقل | معناه للمحاسب |
+|---|---|
+| `acc_id` | رقم الحساب الداخلي |
+| `acc_code` | كود الحساب |
+| `acc_name` | اسم الحساب |
+| `acc_name_en` | اسم الحساب بالإنجليزية |
+| `acc_nature` | طبيعة الحساب: مدين / دائن |
+| `acc_balance` | الرصيد |
+| `acc_amt_in` | إجمالي المدين |
+| `acc_amt_out` | إجمالي الدائن |
+
+---
+
+## جدول سجل التكامل `erp_integ_log`
+
+| الحقل | معناه للمحاسب |
+|---|---|
+| `entity_type` | نوع المستند: invoice / payment / plt_exp / client |
+| `entity_id` | رقم المستند داخل النظام |
+| `operation` | العملية: sync / post / cancel |
+| `status` | OK أو ERROR |
+| `http_code` | كود الاستجابة من ERPNext |
+| `error_message` | رسالة الخطأ |
+| `request_data` | البيانات التي تم إرسالها |
+| `response_data` | رد ERPNext |
+| `dt_created` | وقت العملية |
+
+---
+
+# 6) أخطاء متوقعة ومعناها للمحاسب
+
+| رسالة / حالة | معناها | المطلوب |
+|---|---|---|
+| Client not found | الفاتورة أو التحصيل ليس له عميل صحيح | مراجعة العميل في المستند |
+| Already linked to ERPNext | المستند تم إرساله قبل ذلك | لا يتم تكرار الإرسال |
+| Payment has no lines | التحصيل بدون بنود | مراجعة تفاصيل التحصيل |
+| No customer | التحصيل بدون عميل | مراجعة `atr_id` |
+| Journal not balanced | القيد غير متوازن | مساواة المدين والدائن |
+| No GL lines | لا توجد قيود محاسبية صالحة | مراجعة `acc_entry` |
+| No expense account code | المصروف بدون حساب مصروف | إضافة `post_acc_code` |
+| No treasury | المصروف بدون خزينة | تحديد الخزينة |
+| Treasury has no acc_code | الخزينة غير مربوطة بحساب | ربط الخزينة بحساب محاسبي |
+| Amount is zero | قيمة المصروف صفر | مراجعة المبلغ |
+| Expense must be posted first | المصروف لم يعتمد أو لم يرحل داخليًا | مراجعة حالة المصروف |
+
+---
+
+# 7) قائمة مراجعة سريعة للمحاسب قبل التشغيل
+
+## قبل إرسال الفواتير
+- [ ] كل عميل له اسم ورقم ضريبي صحيح.
+- [ ] كل فاتورة لها عميل.
+- [ ] قيمة الفاتورة والضريبة صحيحة.
+- [ ] بنود الفاتورة واضحة.
+- [ ] حساب الإيراد الافتراضي مضبوط.
+- [ ] قالب الضريبة مضبوط.
+- [ ] الفاتورة لم يتم إرسالها قبل ذلك.
+
+## قبل إرسال التحصيلات
+- [ ] التحصيل له عميل.
+- [ ] التحصيل له بنود.
+- [ ] المبلغ أكبر من صفر.
+- [ ] الخزينة / البنك له كود حساب.
+- [ ] الفاتورة المرتبط بها التحصيل مرسلة إلى ERPNext.
+- [ ] رقم العملية البنكية موجود عند الحاجة.
+
+## قبل إرسال المصروفات
+- [ ] المصروف معتمد ومرحل داخليًا.
+- [ ] حساب المصروف موجود.
+- [ ] حساب الضريبة موجود لو في ضريبة.
+- [ ] الخزينة / البنك مربوط بحساب.
+- [ ] قيمة المصروف صحيحة.
+- [ ] لا يوجد إرسال سابق لنفس المصروف.
+
+## قبل إرسال القيود العامة
+- [ ] كل سطر له حساب.
+- [ ] إجمالي المدين = إجمالي الدائن.
+- [ ] التاريخ والوصف صحيحان.
+- [ ] مركز التكلفة صحيح إن كان مطلوبًا.
+
+---
+
+# 8) ملخص دورة العمل المالية
 
 ```text
-filters=[["tax_id","=","{{vat_number}}"]]
-fields=["name","customer_name","tax_id"]
-limit_page_length=1
-```
-
-**cURL**
-
-```bash
-curl -G "{{base_url}}/api/resource/Customer" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data-urlencode 'filters=[["tax_id","=","{{vat_number}}"]]' \
-  --data-urlencode 'fields=["name","customer_name","tax_id"]' \
-  --data-urlencode "limit_page_length=1"
+عميل داخل النظام
+        ↓
+يتأكد النظام أنه موجود في ERPNext أو ينشئه
+        ↓
+فاتورة داخل النظام
+        ↓
+Sales Invoice في ERPNext
+        ↓
+تحصيل داخل النظام
+        ↓
+Payment Entry في ERPNext مربوط بالفاتورة
+        ↓
+أي مصروف أو قيد
+        ↓
+Journal Entry في ERPNext
 ```
 
 ---
 
-### 3.3 Search Customer By Dynamic Field
+# 9) ملاحظات مهمة من مراجعة ملف قاعدة البيانات
 
-Supported field mapping from code:
+- ملف قاعدة البيانات المرفق يحتوي على **هيكل الجداول المالية** بوضوح.
+- لم تظهر بيانات فعلية كثيرة بصيغة `INSERT` للجداول المالية الرئيسية مثل `plt_einv`, `plt_pay`, `plt_exp`, `res_client`.
+- لذلك هذا الدليل مبني على:
+  - كود التكامل ERPNext.
+  - هيكل الجداول والحقول في قاعدة البيانات.
+- عند توفر داتا فعلية للفواتير والتحصيلات والمصروفات، يمكن إضافة قسم أمثلة حقيقية مثل:
+  - مثال فاتورة كاملة.
+  - مثال تحصيل مربوط بفاتورة.
+  - مثال مصروف عقاري بقيده المحاسبي.
+  - مثال خطأ من سجل التكامل وكيفية حله.
 
-| Local Field | ERPNext Field |
+---
+
+# 10) نسخة مختصرة جدًا للمحاسب
+
+| العملية | ماذا يفعل النظام في ERPNext؟ | ماذا يراجع المحاسب؟ |
+|---|---|---|
+| العميل | ينشئ / يربط Customer | الاسم والرقم الضريبي |
+| الفاتورة | ينشئ Sales Invoice | العميل، المبلغ، الضريبة، الإيراد |
+| التحصيل | ينشئ Payment Entry | البنك / الخزينة، المبلغ، الفاتورة |
+| المصروف | ينشئ Journal Entry | حساب المصروف، الضريبة، الخزينة |
+| القيد العام | ينشئ Journal Entry | توازن المدين والدائن |
+| الإلغاء | يلغي Sales Invoice | صحة قرار الإلغاء وأثره |
+
+---
+
+## 11) ملحق للمبرمج فقط — أسماء المستندات في ERPNext
+
+> هذا القسم ليس مطلوبًا من المحاسب، لكنه مفيد عند المراجعة مع المطور.
+
+| العملية | ERPNext DocType |
 |---|---|
-| `vat_number` | `tax_id` |
-| `tax_number` | `tax_id` |
-| `email` | `email_id` |
-| `phone` | `mobile_no` |
-| `name` | `customer_name` |
-
-```http
-GET {{base_url}}/api/resource/Customer?filters={{filters}}&fields={{fields}}&limit_page_length=1
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**cURL**
-
-```bash
-curl -G "{{base_url}}/api/resource/Customer" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data-urlencode 'filters=[["{{erpnext_field}}","=","{{value}}"]]' \
-  --data-urlencode 'fields=["name","customer_name","tax_id"]' \
-  --data-urlencode "limit_page_length=1"
-```
-
----
-
-### 3.4 Get First Non-Group Customer Group
-
-Used as fallback when `default_customer_group` is empty.
-
-```http
-GET {{base_url}}/api/resource/Customer Group?filters={{filters}}&fields={{fields}}&limit_page_length=1
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**cURL**
-
-```bash
-curl -G "{{base_url}}/api/resource/Customer Group" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data-urlencode 'filters=[["is_group","=",0]]' \
-  --data-urlencode 'fields=["name"]' \
-  --data-urlencode "limit_page_length=1"
-```
-
----
-
-### 3.5 Get First Non-Group Territory
-
-Used as fallback when `default_territory` is empty.
-
-```http
-GET {{base_url}}/api/resource/Territory?filters={{filters}}&fields={{fields}}&limit_page_length=1
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**cURL**
-
-```bash
-curl -G "{{base_url}}/api/resource/Territory" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data-urlencode 'filters=[["is_group","=",0]]' \
-  --data-urlencode 'fields=["name"]' \
-  --data-urlencode "limit_page_length=1"
-```
-
----
-
-### 3.6 Create Customer
-
-```http
-POST {{base_url}}/api/resource/Customer
-Content-Type: application/json
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**Body**
-
-```json
-{
-  "customer_name": "{{customer_name}}",
-  "customer_type": "Company",
-  "customer_group": "{{customer_group}}",
-  "territory": "{{territory}}",
-  "tax_id": "{{vat_number}}",
-  "mobile_no": "{{contact_mobile}}",
-  "email_id": "{{contact_email}}"
-}
-```
-
-**cURL**
-
-```bash
-curl -X POST "{{base_url}}/api/resource/Customer" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data '{
-    "customer_name": "{{customer_name}}",
-    "customer_type": "Company",
-    "customer_group": "{{customer_group}}",
-    "territory": "{{territory}}",
-    "tax_id": "{{vat_number}}",
-    "mobile_no": "{{contact_mobile}}",
-    "email_id": "{{contact_email}}"
-  }'
-```
-
----
-
-## 4. Sales Invoice Requests
-
-### 4.1 Create Sales Invoice
-
-```http
-POST {{base_url}}/api/resource/Sales Invoice
-Content-Type: application/json
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**Body**
-
-```json
-{
-  "doctype": "Sales Invoice",
-  "customer": "{{customer_erp_id}}",
-  "posting_date": "{{posting_date}}",
-  "due_date": "{{due_date}}",
-  "currency": "{{currency}}",
-  "company": "{{company}}",
-  "title": "{{invoice_number}}",
-  "remarks": "{{notes}}",
-  "taxes_and_charges": "{{default_tax_template}}",
-  "items": [
-    {
-      "item_code": "{{item_code}}",
-      "description": "{{description}}",
-      "qty": 1,
-      "rate": 100,
-      "income_account": "{{default_income_account}}",
-      "cost_center": "{{default_cost_center}}"
-    }
-  ]
-}
-```
-
-**Credit Note / Return**
-
-When `mov_type = credit_note`, the request still uses `Sales Invoice`, but adds:
-
-```json
-{
-  "is_return": 1
-}
-```
-
-And item quantities become negative:
-
-```json
-{
-  "qty": -1,
-  "rate": 100
-}
-```
-
-**cURL**
-
-```bash
-curl -X POST "{{base_url}}/api/resource/Sales Invoice" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data '{
-    "doctype": "Sales Invoice",
-    "customer": "{{customer_erp_id}}",
-    "posting_date": "{{posting_date}}",
-    "due_date": "{{due_date}}",
-    "currency": "{{currency}}",
-    "company": "{{company}}",
-    "title": "{{invoice_number}}",
-    "remarks": "{{notes}}",
-    "taxes_and_charges": "{{default_tax_template}}",
-    "items": [
-      {
-        "item_code": "{{item_code}}",
-        "description": "{{description}}",
-        "qty": 1,
-        "rate": 100,
-        "income_account": "{{default_income_account}}",
-        "cost_center": "{{default_cost_center}}"
-      }
-    ]
-  }'
-```
-
----
-
-### 4.2 Get Sales Invoice By ERP ID
-
-```http
-GET {{base_url}}/api/resource/Sales Invoice/{{sales_invoice_name}}
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**cURL**
-
-```bash
-curl -X GET "{{base_url}}/api/resource/Sales Invoice/{{sales_invoice_name}}" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}"
-```
-
----
-
-### 4.3 Cancel Sales Invoice
-
-```http
-POST {{base_url}}/api/method/frappe.client.cancel
-Content-Type: application/json
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**Body**
-
-```json
-{
-  "doctype": "Sales Invoice",
-  "name": "{{sales_invoice_name}}"
-}
-```
-
-**cURL**
-
-```bash
-curl -X POST "{{base_url}}/api/method/frappe.client.cancel" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data '{
-    "doctype": "Sales Invoice",
-    "name": "{{sales_invoice_name}}"
-  }'
-```
-
----
-
-## 5. Item Requests
-
-### 5.1 Get Item By Item Code
-
-```http
-GET {{base_url}}/api/resource/Item/{{item_code}}
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**cURL**
-
-```bash
-curl -X GET "{{base_url}}/api/resource/Item/{{item_code}}" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}"
-```
-
----
-
-### 5.2 Get Item Groups
-
-Used when creating missing service items.
-
-```http
-GET {{base_url}}/api/resource/Item Group?filters={{filters}}&fields={{fields}}&limit_page_length=5
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**cURL**
-
-```bash
-curl -G "{{base_url}}/api/resource/Item Group" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data-urlencode 'filters=[["is_group","=",0]]' \
-  --data-urlencode 'fields=["name"]' \
-  --data-urlencode "limit_page_length=5"
-```
-
----
-
-### 5.3 Create Item
-
-```http
-POST {{base_url}}/api/resource/Item
-Content-Type: application/json
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**Body**
-
-```json
-{
-  "item_code": "{{item_code}}",
-  "item_name": "{{item_code}}",
-  "item_group": "{{item_group}}",
-  "is_stock_item": 0
-}
-```
-
-**cURL**
-
-```bash
-curl -X POST "{{base_url}}/api/resource/Item" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data '{
-    "item_code": "{{item_code}}",
-    "item_name": "{{item_code}}",
-    "item_group": "{{item_group}}",
-    "is_stock_item": 0
-  }'
-```
-
----
-
-## 6. Payment Entry Requests
-
-### Create Payment Entry
-
-```http
-POST {{base_url}}/api/resource/Payment Entry
-Content-Type: application/json
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**Body**
-
-```json
-{
-  "doctype": "Payment Entry",
-  "payment_type": "Receive",
-  "party_type": "Customer",
-  "party": "{{customer_erp_id}}",
-  "posting_date": "{{payment_date}}",
-  "paid_amount": 100,
-  "received_amount": 100,
-  "target_exchange_rate": 1,
-  "paid_to_account_currency": "{{currency}}",
-  "company": "{{company}}",
-  "paid_to": "{{incoming_payment_account}}",
-  "reference_no": "{{transaction_id}}",
-  "reference_date": "{{payment_date}}",
-  "references": [
-    {
-      "reference_doctype": "Sales Invoice",
-      "reference_name": "{{sales_invoice_name}}",
-      "allocated_amount": 100
-    }
-  ]
-}
-```
-
-**cURL**
-
-```bash
-curl -X POST "{{base_url}}/api/resource/Payment Entry" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data '{
-    "doctype": "Payment Entry",
-    "payment_type": "Receive",
-    "party_type": "Customer",
-    "party": "{{customer_erp_id}}",
-    "posting_date": "{{payment_date}}",
-    "paid_amount": 100,
-    "received_amount": 100,
-    "target_exchange_rate": 1,
-    "paid_to_account_currency": "{{currency}}",
-    "company": "{{company}}",
-    "paid_to": "{{incoming_payment_account}}",
-    "reference_no": "{{transaction_id}}",
-    "reference_date": "{{payment_date}}",
-    "references": [
-      {
-        "reference_doctype": "Sales Invoice",
-        "reference_name": "{{sales_invoice_name}}",
-        "allocated_amount": 100
-      }
-    ]
-  }'
-```
-
----
-
-## 7. Journal Entry Requests
-
-### 7.1 Create Journal Entry For General Expense
-
-```http
-POST {{base_url}}/api/resource/Journal Entry
-Content-Type: application/json
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**Body**
-
-```json
-{
-  "doctype": "Journal Entry",
-  "posting_date": "{{posting_date}}",
-  "voucher_type": "Journal Entry",
-  "company": "{{company}}",
-  "user_remark": "{{remark}}",
-  "accounts": [
-    {
-      "account": "{{debit_account}}",
-      "debit_in_account_currency": 100,
-      "company": "{{company}}"
-    },
-    {
-      "account": "{{credit_account}}",
-      "credit_in_account_currency": 100,
-      "company": "{{company}}"
-    }
-  ]
-}
-```
-
-**cURL**
-
-```bash
-curl -X POST "{{base_url}}/api/resource/Journal Entry" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data '{
-    "doctype": "Journal Entry",
-    "posting_date": "{{posting_date}}",
-    "voucher_type": "Journal Entry",
-    "company": "{{company}}",
-    "user_remark": "{{remark}}",
-    "accounts": [
-      {
-        "account": "{{debit_account}}",
-        "debit_in_account_currency": 100,
-        "company": "{{company}}"
-      },
-      {
-        "account": "{{credit_account}}",
-        "credit_in_account_currency": 100,
-        "company": "{{company}}"
-      }
-    ]
-  }'
-```
-
----
-
-### 7.2 Create Journal Entry For Property Expense
-
-This request is used for `plt_exp`.
-
-**Accounts Logic**
-
-- Debit expense account with amount before tax, or total amount if no tax account.
-- Debit tax account when tax amount exists.
-- Credit treasury account with total amount.
-
-```http
-POST {{base_url}}/api/resource/Journal Entry
-Content-Type: application/json
-Accept: application/json
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-**Body**
-
-```json
-{
-  "doctype": "Journal Entry",
-  "posting_date": "{{posting_date}}",
-  "voucher_type": "Journal Entry",
-  "company": "{{company}}",
-  "user_remark": "{{expense_code}} — {{memo}}",
-  "accounts": [
-    {
-      "account": "{{expense_account}}",
-      "debit_in_account_currency": 100
-    },
-    {
-      "account": "{{tax_account}}",
-      "debit_in_account_currency": 15
-    },
-    {
-      "account": "{{treasury_account}}",
-      "credit_in_account_currency": 115
-    }
-  ]
-}
-```
-
-**cURL**
-
-```bash
-curl -X POST "{{base_url}}/api/resource/Journal Entry" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -H "Authorization: token {{erp_api_key}}:{{erp_api_secret}}" \
-  --data '{
-    "doctype": "Journal Entry",
-    "posting_date": "{{posting_date}}",
-    "voucher_type": "Journal Entry",
-    "company": "{{company}}",
-    "user_remark": "{{expense_code}} — {{memo}}",
-    "accounts": [
-      {
-        "account": "{{expense_account}}",
-        "debit_in_account_currency": 100
-      },
-      {
-        "account": "{{tax_account}}",
-        "debit_in_account_currency": 15
-      },
-      {
-        "account": "{{treasury_account}}",
-        "credit_in_account_currency": 115
-      }
-    ]
-  }'
-```
-
----
-
-## 8. Request Summary Table
-
-| # | Purpose | Method | Endpoint |
-|---:|---|---|---|
-| 1 | Login | POST | `/api/method/login` |
-| 2 | Test logged user | GET | `/api/method/frappe.auth.get_logged_user` |
-| 3 | Get Customer | GET | `/api/resource/Customer/{name}` |
-| 4 | Search Customer | GET | `/api/resource/Customer?filters=...` |
-| 5 | List Customer Groups | GET | `/api/resource/Customer Group?filters=...` |
-| 6 | List Territories | GET | `/api/resource/Territory?filters=...` |
-| 7 | Create Customer | POST | `/api/resource/Customer` |
-| 8 | Create Sales Invoice | POST | `/api/resource/Sales Invoice` |
-| 9 | Get Sales Invoice | GET | `/api/resource/Sales Invoice/{name}` |
-| 10 | Cancel Sales Invoice | POST | `/api/method/frappe.client.cancel` |
-| 11 | Get Item | GET | `/api/resource/Item/{item_code}` |
-| 12 | List Item Groups | GET | `/api/resource/Item Group?filters=...` |
-| 13 | Create Item | POST | `/api/resource/Item` |
-| 14 | Create Payment Entry | POST | `/api/resource/Payment Entry` |
-| 15 | Create Journal Entry | POST | `/api/resource/Journal Entry` |
-
----
-
-## 9. Notes
-
-- All `POST`, `PUT`, and `PATCH` requests use `Content-Type: application/json`.
-- Token authentication uses:
-
-```http
-Authorization: token {{erp_api_key}}:{{erp_api_secret}}
-```
-
-- Password authentication uses session cookies from `/api/method/login`.
-- The code disables SSL verification in cURL using:
-  - `CURLOPT_SSL_VERIFYPEER => false`
-  - `CURLOPT_SSL_VERIFYHOST => false`
-
-For production, it is safer to enable SSL verification if the ERPNext server has a valid SSL certificate.
+| العميل | Customer |
+| الفاتورة | Sales Invoice |
+| التحصيل | Payment Entry |
+| المصروف / القيد | Journal Entry |
+| الصنف / الخدمة | Item |
+| مجموعة الأصناف | Item Group |
+| مجموعة العملاء | Customer Group |
+| المنطقة | Territory |
